@@ -1,96 +1,140 @@
 import React, { useState } from 'react';
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
-import { PublicKey, Transaction, SystemProgram } from '@solana/web3.js';
+import { PublicKey, Transaction } from '@solana/web3.js';
+import {
+  createMint,
+  getAssociatedTokenAddress,
+  createAssociatedTokenAccountInstruction,
+  createMintToInstruction,
+  createTransferInstruction,
+} from '@solana/spl-token';
 
 const TokenActions = () => {
   const { connection } = useConnection();
   const { publicKey, sendTransaction } = useWallet();
   const [status, setStatus] = useState('');
+  const amountToMint = 1;   // For decimals=0
+  const amountToSend = 1;   // For transfer
 
+  // Create Token (For demonstration; may not work with browser wallets like Phantom)
   const createToken = async () => {
     if (!publicKey) return setStatus("Wallet not connected.");
     setStatus("Creating token...");
     try {
-      // Replace with your actual token creation logic
-      const transaction = new Transaction().add(
-        SystemProgram.transfer({
-          fromPubkey: publicKey,
-          toPubkey: publicKey, // Use your program address or appropriate destination
-          lamports: 0,
-        })
+      const newMint = await createMint(
+        connection,
+        publicKey, // fee payer (will fail with Phantom because it needs a full keypair)
+        publicKey, // mint authority (Phantom only exposes public key)
+        null,
+        0
       );
-      const signature = await sendTransaction(transaction, connection);
-      setStatus(`Token created! Signature: ${signature}`);
+      setStatus(`Token created! Mint Address: ${newMint.toBase58()}`);
     } catch (error) {
-      console.error(error);
-      setStatus("Error creating token.");
+      console.error("Create token error:", error);
+      setStatus("Error creating token. (This function may not work with Phantom.)");
     }
   };
 
+  // Mint Token Function
   const mintToken = async () => {
     if (!publicKey) return setStatus("Wallet not connected.");
     setStatus("Minting token...");
     try {
-      // Replace with your actual mint logic
-      const transaction = new Transaction().add(
-        SystemProgram.transfer({
-          fromPubkey: publicKey,
-          toPubkey: publicKey, // Use mint authority or appropriate address
-          lamports: 0,
-        })
+      const mintAddressInput = window.prompt("Enter the pre-deployed mint address:");
+      if (!mintAddressInput) return setStatus("Mint address is required.");
+      const mintPubKey = new PublicKey(mintAddressInput);
+
+      // Derive the associated token account (ATA) for your wallet
+      const ata = await getAssociatedTokenAddress(mintPubKey, publicKey);
+      console.log("Derived ATA:", ata.toBase58());
+
+      let transaction = new Transaction();
+      const ataInfo = await connection.getAccountInfo(ata);
+      if (ataInfo === null) {
+        const createAtaIx = createAssociatedTokenAccountInstruction(
+          publicKey,
+          ata,
+          publicKey,
+          mintPubKey
+        );
+        transaction.add(createAtaIx);
+        const ataTxSig = await sendTransaction(transaction, connection);
+        console.log("Created ATA, signature:", ataTxSig);
+        await connection.confirmTransaction(ataTxSig);
+      }
+
+      // Mint tokens to the ATA
+      const mintIx = createMintToInstruction(
+        mintPubKey,
+        ata,
+        publicKey,
+        amountToMint
       );
-      const signature = await sendTransaction(transaction, connection);
-      setStatus(`Token minted! Signature: ${signature}`);
+      transaction = new Transaction().add(mintIx);
+      const mintTxSig = await sendTransaction(transaction, connection);
+      console.log("Mint Tx Signature:", mintTxSig);
+      setStatus(`Token minted! Signature: ${mintTxSig}`);
     } catch (error) {
-      console.error(error);
+      console.error("Minting error:", error);
       setStatus("Error minting token.");
     }
   };
 
+  // Send Token Function
   const sendToken = async () => {
     if (!publicKey) return setStatus("Wallet not connected.");
     setStatus("Sending token...");
     try {
-      const destination = window.prompt("Enter destination wallet address:");
-      if (!destination) return setStatus("Transaction cancelled.");
+      const mintAddressInput = window.prompt("Enter the mint address:");
+      if (!mintAddressInput) return setStatus("Mint address is required.");
+      const recipientAddressInput = window.prompt("Enter recipient wallet address:");
+      if (!recipientAddressInput) return setStatus("Recipient address is required.");
 
-      const destPubKey = new PublicKey(destination);
-      // Replace with your actual token transfer logic
-      const transaction = new Transaction().add(
-        SystemProgram.transfer({
-          fromPubkey: publicKey,
-          toPubkey: destPubKey,
-          lamports: 0,
-        })
+      const mintPubKey = new PublicKey(mintAddressInput);
+      const recipientPubKey = new PublicKey(recipientAddressInput);
+
+      const senderATA = await getAssociatedTokenAddress(mintPubKey, publicKey);
+      const recipientATA = await getAssociatedTokenAddress(mintPubKey, recipientPubKey);
+
+      let transaction = new Transaction();
+      const recipientAtaInfo = await connection.getAccountInfo(recipientATA);
+      if (recipientAtaInfo === null) {
+        const createRecipientAtaIx = createAssociatedTokenAccountInstruction(
+          publicKey,
+          recipientATA,
+          recipientPubKey,
+          mintPubKey
+        );
+        transaction.add(createRecipientAtaIx);
+      }
+
+      const transferIx = createTransferInstruction(
+        senderATA,
+        recipientATA,
+        publicKey,
+        amountToSend
       );
-      const signature = await sendTransaction(transaction, connection);
-      setStatus(`Token sent! Signature: ${signature}`);
+      transaction.add(transferIx);
+      const transferTxSig = await sendTransaction(transaction, connection);
+      console.log("Transfer Tx Signature:", transferTxSig);
+      setStatus(`Token sent! Signature: ${transferTxSig}`);
     } catch (error) {
-      console.error(error);
+      console.error("Transfer error:", error);
       setStatus("Error sending token.");
     }
   };
 
   return (
-    <div className="mt-8">
-      <h2 className="text-2xl font-bold mb-4">Token Actions</h2>
-      <div className="flex flex-col space-y-4">
-        <button
-          onClick={createToken}
-          className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
-        >
+    <div className="mt-8 space-y-4">
+      <h2 className="text-2xl font-bold">Token Actions</h2>
+      <div className="flex flex-col gap-4">
+        <button onClick={createToken} className="primary">
           Create Token
         </button>
-        <button
-          onClick={mintToken}
-          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-        >
+        <button onClick={mintToken} className="primary">
           Mint Token
         </button>
-        <button
-          onClick={sendToken}
-          className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700"
-        >
+        <button onClick={sendToken} className="primary">
           Send Token
         </button>
       </div>
